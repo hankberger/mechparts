@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import re
+import threading
 from dataclasses import dataclass
 from typing import Any
 
@@ -12,7 +14,7 @@ from pydantic import ValidationError
 from mechparts.config import Settings
 from mechparts.core import registry
 from mechparts.core.db import Database
-from mechparts.core.geometry import analyze, check_mesh, export_bytes
+from mechparts.core.geometry import GeometryError, analyze, check_mesh, export_bytes
 from mechparts.core.hashing import geometry_hash
 from mechparts.core.models import (
     GenerationResult,
@@ -24,6 +26,9 @@ from mechparts.core.models import (
 )
 from mechparts.core.part import PartFamily
 from mechparts.core.storage import LocalStorage, Storage
+
+# build123d logs every extrude at INFO, which floods server logs.
+logging.getLogger("build123d").setLevel(logging.WARNING)
 
 FORMATS: tuple[OutputFormat, ...] = ("stl", "step", "3mf")
 MEDIA_TYPES = {
@@ -59,6 +64,11 @@ class InvalidParameters(ServiceError):
 class InvalidFormat(ServiceError):
     code = "invalid_format"
     status = 422
+
+
+class GenerationFailed(ServiceError):
+    code = "generation_failed"
+    status = 500
 
 
 class NotFound(ServiceError):
@@ -116,6 +126,8 @@ class PartService:
         self.settings = settings or Settings()
         self.storage = storage or LocalStorage(self.settings.files_dir)
         self.db = db or Database(self.settings.db_path)
+        # OCCT is not safe to drive from several threads at once; serialize geometry work.
+        self._build_lock = threading.Lock()
         self.db.sync_catalog(
             [
                 {"id": p.id, "name": p.name, "summary": p.summary, "tags": p.tags, "standards": p.standards,
@@ -237,11 +249,17 @@ class PartService:
                 }
             )
 
-        shape = part.build(model)
-        info = analyze(shape)
-        stl = export_bytes(shape, "stl", hash_)
-        check_mesh(stl)  # raises GeometryError if not watertight/manifold
-        data = stl if fmt == "stl" else export_bytes(shape, fmt, hash_)
+        with self._build_lock:
+            try:
+                shape = part.build(model)
+                info = analyze(shape)
+                stl = export_bytes(shape, "stl", hash_)
+                check_mesh(stl)  # fails loudly if not watertight/manifold
+                data = stl if fmt == "stl" else export_bytes(shape, fmt, hash_)
+            except GeometryError as err:
+                raise GenerationFailed(
+                    f"Generating {part_id} failed a geometry check: {err}", resolved_params=resolved
+                ) from err
 
         key = f"{hash_}.{fmt}"
         self.storage.put(key, data)

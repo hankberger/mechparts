@@ -75,6 +75,7 @@ class SpurGear(PartFamily):
             "If mating gears bind, add a little backlash by printing with slight negative XY compensation.",
         ],
     )
+    Params = SpurGearParams
     generator_version = "1"
     computed_dimensions = {
         "pitch_diameter": "Diameter of the pitch circle (module * teeth).",
