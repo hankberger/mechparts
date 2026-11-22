@@ -48,8 +48,8 @@ def test_outputs_are_byte_reproducible(tmp_path, fmt):
     from mechparts.config import Settings
     from mechparts.service import PartService
 
-    a = PartService(Settings(data_dir=tmp_path / "a")).generate_part("spur_gear", {"teeth": 11}, fmt)
-    b = PartService(Settings(data_dir=tmp_path / "b")).generate_part("spur_gear", {"teeth": 11}, fmt)
+    a = PartService(Settings(data_dir=tmp_path / "a", workers=0)).generate_part("spur_gear", {"teeth": 11}, fmt)
+    b = PartService(Settings(data_dir=tmp_path / "b", workers=0)).generate_part("spur_gear", {"teeth": 11}, fmt)
     assert a.file_sha256 == b.file_sha256
 
 

@@ -40,11 +40,14 @@ def create_app(service: PartService | None = None, mount_mcp: bool = True, mcp_h
 
     @contextlib.asynccontextmanager
     async def lifespan(app: FastAPI):
-        if mcp_server is None:
-            yield
-            return
-        async with mcp_server.session_manager.run():
-            yield
+        try:
+            if mcp_server is None:
+                yield
+            else:
+                async with mcp_server.session_manager.run():
+                    yield
+        finally:
+            service.close()
 
     app = FastAPI(
         title="mechparts",
