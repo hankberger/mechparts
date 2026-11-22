@@ -88,3 +88,9 @@ def test_computed_dimensions():
     assert c["outer_diameter"] == 54
     assert c["root_diameter"] == 45
     assert c["total_length"] == 11
+
+
+def test_undercut_warning_uses_classical_limit():
+    assert not PART.warnings(SpurGearParams(teeth=20))
+    assert not PART.warnings(SpurGearParams(teeth=18))
+    assert any("undercut" in w for w in PART.warnings(SpurGearParams(teeth=16)))

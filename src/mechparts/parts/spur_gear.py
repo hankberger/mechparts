@@ -161,7 +161,9 @@ class SpurGear(PartFamily):
     def warnings(self, p: SpurGearParams) -> list[str]:
         g = self._geo(p)
         out = []
-        if g.undercut:
+        # Warn at the classical limit (working depth 1.0 m > r sin^2 a, about 17 teeth at 20 deg).
+        # Between that and ~21 teeth the 1.25 m rack corner only trims the fillet slightly.
+        if p.module > g.pitch_radius * math.sin(g.alpha) ** 2:
             out.append(
                 f"{p.teeth} teeth at {p.pressure_angle} deg are undercut, as on a hobbed gear. The gear meshes "
                 "correctly but tooth roots are weaker; use more teeth for heavy loads."
