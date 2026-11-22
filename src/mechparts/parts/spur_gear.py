@@ -3,18 +3,18 @@
 from __future__ import annotations
 
 import math
+from typing import Literal
 
 import build123d as bd
 from pydantic import Field
 
-from mechparts.core import features
+from mechparts.core import checks, features
 from mechparts.core.involute import SpurGearGeometry
 from mechparts.core.models import ParamIssue, Printability
 from mechparts.core.part import PartFamily, PartParams, SetScrewSize, clearance, count, deg, mm
 from mechparts.core.standards import METRIC_SCREWS
-from typing import Literal
 
-MIN_WALL = 1.0  # mm of material required between features
+MIN_WALL = checks.MIN_WALL
 
 
 class SpurGearParams(PartParams):
@@ -140,99 +140,22 @@ class SpurGear(PartFamily):
                 )
             )
 
-        if p.bore_type == "d_shaft":
-            if p.bore_diameter <= 0:
-                issues.append(
-                    ParamIssue(param="bore_type", code="requires_bore", message="bore_type d_shaft needs bore_diameter > 0.")
-                )
-            elif p.d_flat_depth >= p.bore_diameter / 2:
-                issues.append(
-                    ParamIssue(
-                        param="d_flat_depth",
-                        code="too_large",
-                        message=f"d_flat_depth must be less than half of bore_diameter ({p.bore_diameter / 2} mm).",
-                        allowed_max=round(p.bore_diameter / 2 - 0.01, 3),
-                    )
-                )
-
-        has_hub = p.hub_diameter > 0 or p.hub_length > 0
-        if has_hub:
-            if p.hub_diameter <= 0 or p.hub_length <= 0:
-                missing = "hub_diameter" if p.hub_diameter <= 0 else "hub_length"
-                issues.append(
-                    ParamIssue(
-                        param=missing,
-                        code="missing",
-                        message="A hub needs both hub_diameter and hub_length > 0 (set both to 0 for no hub).",
-                    )
-                )
-            else:
-                min_hub = bore + 2 * MIN_WALL if bore > 0 else 2 * MIN_WALL
-                if p.hub_diameter < min_hub:
-                    issues.append(
-                        ParamIssue(
-                            param="hub_diameter",
-                            code="too_small",
-                            message=(
-                                f"hub_diameter {p.hub_diameter} mm leaves less than {MIN_WALL} mm of wall around "
-                                f"the {bore:.2f} mm bore. Use hub_diameter >= {min_hub:.2f} mm."
-                            ),
-                            allowed_min=round(min_hub, 3),
-                        )
-                    )
-                if p.hub_diameter > root_d:
-                    issues.append(
-                        ParamIssue(
-                            param="hub_diameter",
-                            code="too_large",
-                            message=(
-                                f"hub_diameter {p.hub_diameter} mm exceeds the root diameter {root_d:.3f} mm and "
-                                f"would collide with mating teeth. Use hub_diameter <= {root_d:.3f} mm."
-                            ),
-                            allowed_max=round(root_d, 3),
-                        )
-                    )
-
+        issues += checks.check_d_flat(p.bore_type, p.bore_diameter, p.d_flat_depth)
+        issues += checks.check_hub(
+            p.hub_diameter, p.hub_length, bore, root_d, "the root diameter, so it would collide with mating teeth"
+        )
         if p.set_screw:
-            screw = METRIC_SCREWS[p.set_screw_size]
-            if p.bore_diameter <= 0:
-                issues.append(
-                    ParamIssue(param="set_screw", code="requires_bore", message="set_screw needs bore_diameter > 0.")
-                )
-            else:
-                use_hub = p.hub_diameter > 0 and p.hub_length > 0
-                outer = p.hub_diameter if use_hub else root_d
-                length = p.hub_length if use_hub else p.face_width
-                where = "hub" if use_hub else "gear body (no hub)"
-                wall = (outer - bore) / 2
-                if wall < screw.nominal:
-                    need = bore + 2 * screw.nominal
-                    issues.append(
-                        ParamIssue(
-                            param="hub_diameter" if use_hub else "set_screw",
-                            code="too_small",
-                            message=(
-                                f"The {where} wall is {wall:.2f} mm, too thin for an {screw.size} set screw "
-                                f"(needs {screw.nominal} mm of thread). "
-                                + (f"Use hub_diameter >= {need:.2f} mm" if use_hub else "Add a hub")
-                                + " or a smaller set_screw_size."
-                            ),
-                            allowed_min=round(need, 3) if use_hub else None,
-                        )
-                    )
-                need_len = screw.tap_hole + 2 * 0.8
-                if length < need_len:
-                    issues.append(
-                        ParamIssue(
-                            param="hub_length" if use_hub else "face_width",
-                            code="too_small",
-                            message=(
-                                f"The {where} is {length} mm long; an {screw.size} set screw hole needs at least "
-                                f"{need_len:.2f} mm."
-                            ),
-                            allowed_min=round(need_len, 3),
-                        )
-                    )
+            use_hub = p.hub_diameter > 0 and p.hub_length > 0
+            issues += checks.check_set_screw(
+                p.set_screw_size,
+                p.bore_diameter,
+                bore,
+                p.hub_diameter if use_hub else root_d,
+                p.hub_length if use_hub else p.face_width,
+                where="hub" if use_hub else "gear body (no hub)",
+                outer_param="hub_diameter" if use_hub else None,
+                length_param="hub_length" if use_hub else "face_width",
+            )
         return issues
 
     def warnings(self, p: SpurGearParams) -> list[str]:
