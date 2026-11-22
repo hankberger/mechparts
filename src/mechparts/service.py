@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import logging
 import re
-import threading
 from dataclasses import dataclass
 from typing import Any
 
@@ -14,9 +13,10 @@ from pydantic import ValidationError
 from mechparts.config import Settings
 from mechparts.core import registry
 from mechparts.core.db import Database
-from mechparts.core.geometry import GeometryError, analyze, check_mesh, export_bytes
+from mechparts.core.geometry import GeometryError
 from mechparts.core.hashing import geometry_hash
 from mechparts.core.models import (
+    BoundingBox,
     GenerationResult,
     OutputFormat,
     ParamIssue,
@@ -25,6 +25,7 @@ from mechparts.core.models import (
     ValidationResult,
 )
 from mechparts.core.part import PartFamily
+from mechparts.core.runner import Runner, RunnerCrashed, RunnerTimeout, make_runner, produce
 from mechparts.core.storage import LocalStorage, Storage
 
 # build123d logs every extrude at INFO, which floods server logs.
@@ -69,6 +70,11 @@ class InvalidFormat(ServiceError):
 class GenerationFailed(ServiceError):
     code = "generation_failed"
     status = 500
+
+
+class GenerationTimeout(ServiceError):
+    code = "generation_timeout"
+    status = 504
 
 
 class NotFound(ServiceError):
@@ -122,12 +128,17 @@ def _schema_issues(part: PartFamily, err: ValidationError) -> list[ParamIssue]:
 
 
 class PartService:
-    def __init__(self, settings: Settings | None = None, storage: Storage | None = None, db: Database | None = None):
+    def __init__(
+        self,
+        settings: Settings | None = None,
+        storage: Storage | None = None,
+        db: Database | None = None,
+        runner: Runner | None = None,
+    ):
         self.settings = settings or Settings()
         self.storage = storage or LocalStorage(self.settings.files_dir)
         self.db = db or Database(self.settings.db_path)
-        # OCCT is not safe to drive from several threads at once; serialize geometry work.
-        self._build_lock = threading.Lock()
+        self.runner = runner or make_runner(self.settings.workers, self.settings.timeout)
         self.db.sync_catalog(
             [
                 {"id": p.id, "name": p.name, "summary": p.summary, "tags": p.tags, "standards": p.standards,
@@ -135,6 +146,9 @@ class PartService:
                 for p in registry.all_parts().values()
             ]
         )
+
+    def close(self) -> None:
+        self.runner.close()
 
     # Lookup -------------------------------------------------------------
     def _part(self, part_id: str) -> PartFamily:
@@ -249,17 +263,20 @@ class PartService:
                 }
             )
 
-        with self._build_lock:
-            try:
-                shape = part.build(model)
-                info = analyze(shape)
-                stl = export_bytes(shape, "stl", hash_)
-                check_mesh(stl)  # fails loudly if not watertight/manifold
-                data = stl if fmt == "stl" else export_bytes(shape, fmt, hash_)
-            except GeometryError as err:
-                raise GenerationFailed(
-                    f"Generating {part_id} failed a geometry check: {err}", resolved_params=resolved
-                ) from err
+        try:
+            bbox, volume, data = self.runner.run(produce, part.id, resolved, fmt, hash_)
+        except GeometryError as err:
+            raise GenerationFailed(
+                f"Generating {part_id} failed a geometry check: {err}", resolved_params=resolved
+            ) from err
+        except RunnerTimeout as err:
+            raise GenerationTimeout(
+                f"Generating {part_id} took longer than {self.runner.timeout:g} s and was stopped. "
+                "Reduce complexity (e.g. fewer teeth) or retry later.",
+                resolved_params=resolved,
+            ) from err
+        except RunnerCrashed as err:
+            raise GenerationFailed(f"The geometry worker crashed while generating {part_id}.") from err
 
         key = f"{hash_}.{fmt}"
         self.storage.put(key, data)
@@ -274,8 +291,8 @@ class PartService:
             file_path=self.storage.local_path(key),
             resolved_params=resolved,
             computed=part.computed(model),
-            bounding_box=info.bounding_box,
-            volume_mm3=info.volume_mm3,
+            bounding_box=BoundingBox.model_validate(bbox),
+            volume_mm3=volume,
             watertight=True,
             cached=False,
             generator_version=part.generator_version,

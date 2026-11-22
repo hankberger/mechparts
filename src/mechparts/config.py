@@ -14,6 +14,11 @@ class Settings:
         default_factory=lambda: os.environ.get("MECHPARTS_BASE_URL", "http://127.0.0.1:8000").rstrip("/")
     )
 
+    #: Worker processes for geometry generation; 0 runs inline (no timeout).
+    workers: int = field(default_factory=lambda: int(os.environ.get("MECHPARTS_WORKERS", "2")))
+    #: Seconds a single generation may take before it is killed.
+    timeout: float = field(default_factory=lambda: float(os.environ.get("MECHPARTS_TIMEOUT", "120")))
+
     @property
     def db_path(self) -> Path:
         return self.data_dir / "mechparts.sqlite3"
