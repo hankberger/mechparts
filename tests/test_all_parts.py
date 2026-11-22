@@ -11,12 +11,18 @@ PART_IDS = sorted(registry.all_parts())
 
 
 def edge_cases(part_id: str):
-    """Defaults, then every numeric parameter at its min and its max with the rest at defaults."""
+    """Defaults, every numeric parameter at its min and max, and every choice of each enum,
+    each with the remaining parameters at their defaults."""
     part = registry.get(part_id)
     schema = part.parameters_schema()
     yield "defaults", {}
     for name, prop in schema["properties"].items():
-        if prop.get("type") not in ("number", "integer"):
+        for choice in prop.get("enum", []):
+            if choice != prop.get("default"):
+                yield f"{name}={choice}", {name: choice}
+        if prop.get("type") == "boolean":
+            yield f"{name}={not prop['default']}", {name: not prop["default"]}
+        if prop.get("type") not in ("number", "integer") or "enum" in prop:
             continue
         for bound in ("minimum", "maximum"):
             if bound in prop:
@@ -42,7 +48,8 @@ def test_metadata_complete(part_id):
         assert prop.get("description"), f"{name} lacks a description"
         assert "default" in prop, f"{name} lacks a default"
         if prop.get("type") in ("number", "integer"):
-            assert "minimum" in prop and "maximum" in prop, f"{name} lacks min/max"
+            if "enum" not in prop:
+                assert "minimum" in prop and "maximum" in prop, f"{name} lacks min/max"
             assert prop.get("units"), f"{name} lacks units"
 
 
@@ -68,7 +75,7 @@ def test_invalid_inputs(service, part_id):
     assert not v.valid and v.issues[0].code == "unknown_parameter"
     schema = registry.get(part_id).parameters_schema()
     for name, prop in schema["properties"].items():
-        if prop.get("type") in ("number", "integer") and "maximum" in prop:
+        if prop.get("type") in ("number", "integer") and "maximum" in prop and "enum" not in prop:
             v = service.validate_parameters(part_id, {name: prop["maximum"] + 1})
             assert not v.valid
             assert v.issues[0].param == name and v.issues[0].allowed_max == prop["maximum"]
